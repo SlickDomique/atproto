@@ -24,6 +24,7 @@ import compression from './util/compression'
 import { dbLogger, loggerMiddleware, seqLogger } from './logger'
 import { ServerConfig } from './config'
 import { ServerMailer } from './mailer'
+import { ModerationMailer } from './mailer/moderation'
 import { createServer } from './lexicon'
 import { MessageDispatcher } from './event-stream/message-queue'
 import { ImageUriBuilder } from './image/uri'
@@ -42,7 +43,10 @@ import DidSqlCache from './did-cache'
 import { MountedAlgos } from './feed-gen/types'
 import { Crawlers } from './crawlers'
 import { LabelCache } from './label-cache'
+import { ContentReporter } from './content-reporter'
+import { ModerationService } from './services/moderation'
 
+export type { MountedAlgos } from './feed-gen/types'
 export type { ServerConfigValues } from './config'
 export { ServerConfig } from './config'
 export { Database } from './db'
@@ -59,11 +63,7 @@ export class PDS {
   private dbStatsInterval?: NodeJS.Timer
   private sequencerStatsInterval?: NodeJS.Timer
 
-  constructor(opts: {
-    ctx: AppContext
-    app: express.Application
-    sequencerLeader: SequencerLeader
-  }) {
+  constructor(opts: { ctx: AppContext; app: express.Application }) {
     this.ctx = opts.ctx
     this.app = opts.app
   }
@@ -106,17 +106,25 @@ export class PDS {
 
     const messageDispatcher = new MessageDispatcher()
     const sequencer = new Sequencer(db)
-    const sequencerLeader = new SequencerLeader(
-      db,
-      config.sequencerLeaderLockId,
-    )
+    const sequencerLeader = config.sequencerLeaderEnabled
+      ? new SequencerLeader(db, config.sequencerLeaderLockId)
+      : null
 
-    const mailTransport =
+    const serverMailTransport =
       config.emailSmtpUrl !== undefined
         ? createTransport(config.emailSmtpUrl)
         : createTransport({ jsonTransport: true })
 
-    const mailer = new ServerMailer(mailTransport, config)
+    const moderationMailTransport =
+      config.moderationEmailSmtpUrl !== undefined
+        ? createTransport(config.moderationEmailSmtpUrl)
+        : createTransport({ jsonTransport: true })
+
+    const mailer = new ServerMailer(serverMailTransport, config)
+    const moderationMailer = new ModerationMailer(
+      moderationMailTransport,
+      config,
+    )
 
     const app = express()
     app.use(cors())
@@ -180,6 +188,23 @@ export class PDS {
 
     const labelCache = new LabelCache(db)
 
+    let contentReporter: ContentReporter | undefined = undefined
+    if (config.unacceptableWordsB64) {
+      contentReporter = new ContentReporter({
+        backgroundQueue,
+        moderationService: new ModerationService(
+          db,
+          messageDispatcher,
+          blobstore,
+          imgUriBuilder,
+          imgInvalidator,
+        ),
+        reporterDid: config.labelerDid,
+        unacceptableB64: config.unacceptableWordsB64,
+        falsePositivesB64: config.falsePositiveWordsB64,
+      })
+    }
+
     const services = createServices({
       repoSigningKey,
       messageDispatcher,
@@ -188,6 +213,7 @@ export class PDS {
       imgInvalidator,
       labeler,
       labelCache,
+      contentReporter,
       backgroundQueue,
       crawlers,
     })
@@ -206,8 +232,10 @@ export class PDS {
       sequencerLeader,
       labeler,
       labelCache,
+      contentReporter,
       services,
       mailer,
+      moderationMailer,
       imgUriBuilder,
       backgroundQueue,
       crawlers,
@@ -231,11 +259,7 @@ export class PDS {
     app.use(server.xrpc.router)
     app.use(error.handler)
 
-    return new PDS({
-      ctx,
-      app,
-      sequencerLeader,
-    })
+    return new PDS({ ctx, app })
   }
 
   async start(): Promise<http.Server> {
@@ -260,16 +284,18 @@ export class PDS {
         )
       }, 10000)
     }
-    this.sequencerStatsInterval = setInterval(() => {
-      if (this.ctx.sequencerLeader.isLeader) {
-        seqLogger.info(
-          { seq: this.ctx.sequencerLeader.peekSeqVal() },
-          'sequencer leader stats',
-        )
+    this.sequencerStatsInterval = setInterval(async () => {
+      if (this.ctx.sequencerLeader?.isLeader) {
+        try {
+          const seq = await this.ctx.sequencerLeader.lastSeq()
+          seqLogger.info({ seq }, 'sequencer leader stats')
+        } catch (err) {
+          seqLogger.error({ err }, 'error getting last seq')
+        }
       }
     }, 500)
     appviewConsumers.listen(this.ctx)
-    this.ctx.sequencerLeader.run()
+    this.ctx.sequencerLeader?.run()
     await this.ctx.sequencer.start()
     await this.ctx.db.startListeningToChannels()
     this.ctx.labelCache.start()
@@ -283,7 +309,7 @@ export class PDS {
 
   async destroy(): Promise<void> {
     this.ctx.labelCache.stop()
-    await this.ctx.sequencerLeader.destroy()
+    await this.ctx.sequencerLeader?.destroy()
     await this.terminator?.terminate()
     await this.ctx.backgroundQueue.destroy()
     await this.ctx.db.close()

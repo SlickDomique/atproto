@@ -9,7 +9,6 @@ import { UserAlreadyExistsError } from '../../../../services/account'
 import AppContext from '../../../../context'
 import Database from '../../../../db'
 import { AtprotoData } from '@atproto/identity'
-import { backgroundHandleCheckForFlag } from '../../../../handle/moderation'
 
 export default function (server: Server, ctx: AppContext) {
   server.com.atproto.server.createAccount(async ({ input, req }) => {
@@ -106,9 +105,7 @@ export default function (server: Server, ctx: AppContext) {
       }
     })
 
-    if (ctx.cfg.unacceptableHandleWordsB64) {
-      backgroundHandleCheckForFlag({ ctx, handle, did: result.did })
-    }
+    ctx.contentReporter?.checkHandle({ handle, did: result.did })
 
     return {
       encoding: 'application/json',
@@ -127,9 +124,17 @@ export const ensureCodeIsAvailable = async (
   inviteCode: string,
   withLock = false,
 ): Promise<void> => {
+  const { ref } = db.db.dynamic
   const invite = await db.db
     .selectFrom('invite_code')
     .selectAll()
+    .whereNotExists((qb) =>
+      qb
+        .selectFrom('repo_root')
+        .selectAll()
+        .where('takedownId', 'is not', null)
+        .whereRef('did', '=', ref('invite_code.forUser')),
+    )
     .where('code', '=', inviteCode)
     .if(withLock && db.dialect === 'pg', (qb) => qb.forUpdate().skipLocked())
     .executeTakeFirst()

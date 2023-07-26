@@ -46,18 +46,21 @@ export interface ServerConfigValues {
   appUrlPasswordReset: string
   emailSmtpUrl?: string
   emailNoReplyAddress: string
+  moderationEmailAddress?: string
+  moderationEmailSmtpUrl?: string
 
   hiveApiKey?: string
   labelerDid: string
   labelerKeywords: Record<string, string>
-  unacceptableHandleWordsB64?: string
-  falsePositiveHandleWordsB64?: string
+  unacceptableWordsB64?: string
+  falsePositiveWordsB64?: string
 
   feedGenDid?: string
 
   maxSubscriptionBuffer: number
   repoBackfillLimitMs: number
   sequencerLeaderLockId?: number
+  sequencerLeaderEnabled?: boolean
 
   // this is really only used in test environments
   dbTxLockNonce?: string
@@ -161,15 +164,20 @@ export class ServerConfig {
     const emailNoReplyAddress =
       process.env.EMAIL_NO_REPLY_ADDRESS || 'noreply@blueskyweb.xyz'
 
+    const moderationEmailAddress =
+      process.env.MODERATION_EMAIL_ADDRESS || undefined
+    const moderationEmailSmtpUrl =
+      process.env.MODERATION_EMAIL_SMTP_URL || undefined
+
     const hiveApiKey = process.env.HIVE_API_KEY || undefined
     const labelerDid = process.env.LABELER_DID || 'did:example:labeler'
     const labelerKeywords = {}
 
-    const unacceptableHandleWordsB64 = nonemptyString(
-      process.env.UNACCEPTABLE_HANDLE_WORDS_B64,
+    const unacceptableWordsB64 = nonemptyString(
+      process.env.UNACCEPTABLE_WORDS_B64,
     )
-    const falsePositiveHandleWordsB64 = nonemptyString(
-      process.env.FALSE_POSITIVE_HANDLE_WORDS_B64,
+    const falsePositiveWordsB64 = nonemptyString(
+      process.env.FALSE_POSITIVE_WORDS_B64,
     )
 
     const feedGenDid = process.env.FEED_GEN_DID
@@ -191,6 +199,12 @@ export class ServerConfig {
       process.env.SEQUENCER_LEADER_LOCK_ID,
       undefined,
     )
+
+    // by default each instance is a potential sequencer leader, but may be configured off
+    const sequencerLeaderEnabled = process.env.SEQUENCER_LEADER_ENABLED
+      ? process.env.SEQUENCER_LEADER_ENABLED !== '0' &&
+        process.env.SEQUENCER_LEADER_ENABLED !== 'false'
+      : undefined
 
     const dbTxLockNonce = nonemptyString(process.env.DB_TX_LOCK_NONCE)
 
@@ -240,15 +254,18 @@ export class ServerConfig {
       appUrlPasswordReset,
       emailSmtpUrl,
       emailNoReplyAddress,
+      moderationEmailAddress,
+      moderationEmailSmtpUrl,
       hiveApiKey,
       labelerDid,
       labelerKeywords,
-      unacceptableHandleWordsB64,
-      falsePositiveHandleWordsB64,
+      unacceptableWordsB64,
+      falsePositiveWordsB64,
       feedGenDid,
       maxSubscriptionBuffer,
       repoBackfillLimitMs,
       sequencerLeaderLockId,
+      sequencerLeaderEnabled,
       dbTxLockNonce,
       bskyAppViewEndpoint,
       bskyAppViewDid,
@@ -424,6 +441,14 @@ export class ServerConfig {
     return this.cfg.emailNoReplyAddress
   }
 
+  get moderationEmailAddress() {
+    return this.cfg.moderationEmailAddress
+  }
+
+  get moderationEmailSmtpUrl() {
+    return this.cfg.moderationEmailSmtpUrl
+  }
+
   get hiveApiKey() {
     return this.cfg.hiveApiKey
   }
@@ -436,12 +461,12 @@ export class ServerConfig {
     return this.cfg.labelerKeywords
   }
 
-  get unacceptableHandleWordsB64() {
-    return this.cfg.unacceptableHandleWordsB64
+  get unacceptableWordsB64() {
+    return this.cfg.unacceptableWordsB64
   }
 
-  get falsePositiveHandleWordsB64() {
-    return this.cfg.falsePositiveHandleWordsB64
+  get falsePositiveWordsB64() {
+    return this.cfg.falsePositiveWordsB64
   }
 
   get feedGenDid() {
@@ -458,6 +483,10 @@ export class ServerConfig {
 
   get sequencerLeaderLockId() {
     return this.cfg.sequencerLeaderLockId
+  }
+
+  get sequencerLeaderEnabled() {
+    return this.cfg.sequencerLeaderEnabled !== false
   }
 
   get dbTxLockNonce() {
